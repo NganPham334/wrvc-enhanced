@@ -70,7 +70,7 @@
             android:layout_width="fill_parent"
             android:layout_height="wrap_content"
             android:layout_weight="0.16"
-            android:orientation="vertical"
+            android.orientation="vertical"
             android:gravity="center">
             <Button
                 android:id="@+id/buttonEnableDisable"
@@ -105,6 +105,14 @@
             android:layout_weight="0.16"
             android:orientation="vertical"
             android:gravity="center">
+            <Button
+                android:id="@+id/buttonKillService"
+                android:text="Kill Service"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingHorizontal="50dp"
+                android:textColor="#000000"
+                android:layout_gravity="center" />
             <Button
                 android:id="@+id/buttonClose"
                 android:text="@string/close"

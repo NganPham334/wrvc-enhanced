@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.res.AssetManager;
 import android.media.AudioManager;
 import android.os.Bundle;
+import android.util.Log;
 
 import java.io.BufferedWriter;
 import java.io.DataInputStream;
@@ -15,6 +16,7 @@ import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
@@ -31,20 +33,22 @@ import static java.lang.Integer.parseInt;
 
 
 public class HttpServer extends Thread {
-    private static ServerSocket serverSocket;
+    private static final String TAG = "WRVC_HttpServer";
+    private static volatile ServerSocket serverSocket;
     private AudioManager audioManager;
     private Context context;
     private static String server_ip;
     private static int server_port = 9000;
     private static boolean is_a_private_ip_address = false;
-    private static boolean isStart = false;
+    private static volatile boolean isStart = false;
+    private static volatile HttpServer runningThread = null;
 
     public HttpServer(final AudioManager audio, final Context ctx) {
         try {
             this.audioManager = audio;
             this.context = ctx;
         } catch (Exception er) {
-            er.printStackTrace();
+            Log.e(TAG, "HttpServer constructor error", er);
         }
     }
 
@@ -59,11 +63,10 @@ public class HttpServer extends Thread {
                     if (firstMemberString != null && secondMemberString != null) {
                         int firstMember = parseInt(firstMemberString);
                         int secondMember = parseInt(secondMemberString);
-                        // As pointed out to me by Joe Harrison, I have to check for all three valid private ip ranges, as detailed here https://en.wikipedia.org/wiki/Private_network#Private_IPv4_addresses
                         return (
-                                    (firstMember == 10)                                               // 10.0.0.0 – 10.255.255.255
-                                 || (firstMember == 172 && 16 <= secondMember && secondMember <= 31)  // 172.16.0.0 – 172.31.255.255
-                                 || (firstMember == 192 && secondMember == 168)                       // 192.168.0.0 – 192.168.255.255
+                                (firstMember == 10)
+                                        || (firstMember == 172 && 16 <= secondMember && secondMember <= 31)
+                                        || (firstMember == 192 && secondMember == 168)
                         );
                     }
                 }
@@ -73,6 +76,7 @@ public class HttpServer extends Thread {
     }
 
     private void notify_observers() {
+        Log.d(TAG, "notify_observers");
         Intent urlUpdatedIntent = new Intent("com.tanaka42.webremotevolumecontrol.urlupdated");
         Bundle extras = new Bundle();
         extras.putString("url", "http://" + server_ip + ":" + server_port);
@@ -85,56 +89,59 @@ public class HttpServer extends Thread {
 
     @Override
     public void run() {
-        //System.out.println("Starting server ...");
+        runningThread = this;
+        Log.d(TAG, "run");
 
-        // Determine local network IP address
         try {
             final DatagramSocket socket = new DatagramSocket();
             socket.connect(InetAddress.getByName("8.8.8.8"), 10002);
             server_ip = socket.getLocalAddress().getHostAddress();
             socket.disconnect();
-        } catch (SocketException ignored) {
-        } catch (UnknownHostException e) {
-            e.printStackTrace();
+            Log.d(TAG, "Server IP: " + server_ip);
+        } catch (SocketException | UnknownHostException e) {
+            Log.e(TAG, "Error getting server IP", e);
         }
 
-        // Check if determined IP address is a private one (a local network one, not an internet one).
-        // As pointed out to me by Joe Harrison, 192.168.*.* is not the only private range, 10.*.*.* and 172.16.0.0 - 172.31.255.255 are private too.
         is_a_private_ip_address = isPrivateAddress(server_ip);
+        Log.d(TAG, "Is private IP: " + is_a_private_ip_address);
 
-        // update Activity
-        notify_observers();
-
-        // Start accepting request and responding
         if (server_ip != null && is_a_private_ip_address) {
             try {
                 InetAddress addr = InetAddress.getByName(server_ip);
-                serverSocket = new ServerSocket(server_port, 100, addr);
+                serverSocket = new ServerSocket();
+                serverSocket.setReuseAddress(true);
+                serverSocket.bind(new InetSocketAddress(addr, server_port), 100);
                 serverSocket.setSoTimeout(5000);
                 isStart = true;
-                //System.out.println("Server started : listening.");
+                Log.d(TAG, "Server started and listening.");
+                notify_observers(); // Moved here to notify AFTER server is started
+
                 while (isStart) {
                     try {
                         Socket newSocket = serverSocket.accept();
+                        Log.d(TAG, "Accepted new client.");
                         Thread newClient = new ClientThread(newSocket);
                         newClient.start();
                     } catch (SocketTimeoutException ignored) {
-                    } catch (IOException ignored) {
+                    } catch (IOException e) {
+                        if (!isStart) {
+                            Log.d(TAG, "Server socket was closed as expected.");
+                        } else {
+                            Log.e(TAG, "IOException in server loop, shutting down.", e);
+                        }
+                        break;
                     }
                 }
 
             } catch (Exception e) {
-                e.printStackTrace();
+                Log.e(TAG, "Error in server run loop", e);
             }
         }
         isStart = false;
-        context.stopService(new Intent(context, ForegroundService.class));
-        // update Activity
+        Log.d(TAG, "Server stopped.");
         notify_observers();
-        //System.out.println("Server stopped");
+        runningThread = null;
     }
-
-
 
     public class ClientThread extends Thread {
         protected Socket socket;
@@ -148,73 +155,67 @@ public class HttpServer extends Thread {
         @Override
         public void run() {
             try {
-                DataInputStream in = null;
-                DataOutputStream out = null;
-
-                if (this.socket.isConnected()) {
-                    try {
-                        in = new DataInputStream(this.socket.getInputStream());
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                    try {
-                        out = new DataOutputStream(this.socket.getOutputStream());
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                }
+                DataInputStream in = new DataInputStream(this.socket.getInputStream());
+                DataOutputStream out = new DataOutputStream(this.socket.getOutputStream());
 
                 byte[] data = new byte[1500];
 
-                if (in != null) {
-                    while (in.read(data) != -1) {
-                        String recData = new String(data).trim();
-                        String[] header = recData.split("\\r?\\n");
-                        String[] h1 = header[0].split(" ");
+                if (in.read(data) != -1) {
+                    String recData = new String(data).trim();
+                    String[] header = recData.split("\\r?\\n");
+                    String[] h1 = header[0].split(" ");
 
-                        String requestedFile = "";
+                    String requestedFile = "";
 
-                        if (h1.length > 1) {
-                            final String requestLocation = h1[1];
+                    if (h1.length > 1) {
+                        final String requestLocation = h1[1];
 
-                            status_code = "200";
+                        status_code = "200";
 
-                            switch (requestLocation) {
-                                case "/volume-up":
-                                    audioManager.adjustVolume(AudioManager.ADJUST_RAISE, AudioManager.FLAG_PLAY_SOUND);
-                                    break;
-                                case "/volume-down":
-                                    audioManager.adjustVolume(AudioManager.ADJUST_LOWER, AudioManager.FLAG_PLAY_SOUND);
-                                    break;
-                                case "/volume-up.png":
-                                case "/volume-down.png":
-                                    requestedFile = requestLocation.substring(1);
-                                    content_type = "image/png";
-                                    break;
-                                case "/":
-                                    requestedFile = "webremotevolumecontrol_spa.html";
-                                    content_type = "text/html";
-                                    break;
-                                default:
-                                    status_code = "404";
-                                    break;
-                            }
-                        } else {
-                            status_code = "404";
+                        switch (requestLocation) {
+                            case "/volume-up":
+                                audioManager.adjustVolume(AudioManager.ADJUST_RAISE, AudioManager.FLAG_PLAY_SOUND);
+                                break;
+                            case "/volume-down":
+                                audioManager.adjustVolume(AudioManager.ADJUST_LOWER, AudioManager.FLAG_PLAY_SOUND);
+                                break;
+                            case "/volume-up.png":
+                            case "/volume-down.png":
+                                requestedFile = requestLocation.substring(1);
+                                content_type = "image/png";
+                                break;
+                            case "/":
+                                requestedFile = "webremotevolumecontrol_spa.html";
+                                content_type = "text/html";
+                                break;
+                            default:
+                                status_code = "404";
+                                break;
                         }
-
-                        byte[] buffer = new byte[0];
-                        if (!requestedFile.isEmpty()) {
-                            InputStream fileStream = context.getAssets().open(requestedFile, AssetManager.ACCESS_BUFFER);
-                            int size = fileStream.available();
-                            buffer = new byte[size];
-                            int readResult = fileStream.read(buffer);
-                        }
-                        writeResponse(out, buffer.length + "", buffer, status_code, content_type);
+                    } else {
+                        status_code = "404";
                     }
+
+                    byte[] buffer = new byte[0];
+                    if (!requestedFile.isEmpty()) {
+                        InputStream fileStream = context.getAssets().open(requestedFile, AssetManager.ACCESS_BUFFER);
+                        int size = fileStream.available();
+                        buffer = new byte[size];
+                        fileStream.read(buffer);
+                        fileStream.close();
+                    }
+                    writeResponse(out, buffer.length + "", buffer, status_code, content_type);
                 }
+
             } catch (IOException e) {
-                e.printStackTrace();
+                Log.e(TAG, "Error in client thread", e);
+            } finally {
+                try {
+                    socket.close();
+                    Log.d(TAG, "Client socket closed.");
+                } catch (IOException e) {
+                    Log.e(TAG, "Error closing client socket", e);
+                }
             }
         }
     }
@@ -248,21 +249,29 @@ public class HttpServer extends Thread {
                     break;
             }
             pw.flush();
-            //pw.close();
         } catch (Exception er) {
-            er.printStackTrace();
+            Log.e(TAG, "Error in writeResponse", er);
         }
     }
 
     public static void stopServer() {
-        if (isStart) {
-            try {
-                //System.out.println("Stopping server ...");
-                isStart = false;
-                serverSocket.close();
-            } catch (IOException er) {
-                er.printStackTrace();
+        try {
+            Log.d(TAG, "stopServer() called.");
+            isStart = false;
+
+            ServerSocket localSocket = serverSocket;
+            if (localSocket != null) {
+                localSocket.close();
             }
+
+            HttpServer oldThread = runningThread;
+            if (oldThread != null && Thread.currentThread() != oldThread) {
+                Log.d(TAG, "Waiting for old server thread to die...");
+                oldThread.join();
+                Log.d(TAG, "Old server thread is dead.");
+            }
+        } catch (IOException | InterruptedException er) {
+            Log.e(TAG, "Error during server stop", er);
         }
     }
 

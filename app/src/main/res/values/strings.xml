@@ -1,5 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Web Remote Volume Control</string>
+    <string name="app_name">Tips</string>
     <string name="close">Close</string>
     <string name="starting">Start in progress&#8230;</string>
     <string name="running_indicator">Running indicator</string>
