@@ -69,7 +69,7 @@ public class ForegroundService extends Service {
                 .setContentText(getString(R.string.ongoing_notification_text))
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setLargeIcon(BitmapFactory.decodeResource(getResources(), R.mipmap.ic_launcher))
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setPriority(NotificationCompat.PRIORITY_MIN) // Keep notification unobtrusive
                 .setContentIntent(pendingIntent)
                 .build();
 
@@ -93,7 +93,7 @@ public class ForegroundService extends Service {
 
         Log.d(TAG, "onStartCommand received.");
         restartServer();
-        return START_STICKY;
+        return START_STICKY; // Changed back to START_STICKY for reliable restarts
     }
 
     private void restartServer() {
@@ -110,6 +110,7 @@ public class ForegroundService extends Service {
 
     private void createNotificationChannel(String channelId) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Use IMPORTANCE_MIN to make the notification as unobtrusive as possible
             NotificationChannel channel = new NotificationChannel(channelId, getString(R.string.running_indicator), NotificationManager.IMPORTANCE_MIN);
             NotificationManager notificationManager = getSystemService(NotificationManager.class);
             notificationManager.createNotificationChannel(channel);
